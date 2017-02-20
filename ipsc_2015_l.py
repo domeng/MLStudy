@@ -18,12 +18,14 @@ class Word(object):
   def __init__(self):
     self.length = 0
     self.chars = []
+    self.ans = '?'
 
   @staticmethod
   def open(path, ans=None):
     with open(path) as fr:
       lns = [[float(v)/255.0 for v in row.split()] for row in fr.readlines()]
     w = Word()
+    w.ans = ans
     w.length = int(len(lns[0])/sz[0])
     for i in range(w.length):
       if ans is None:
@@ -32,7 +34,7 @@ class Word(object):
         a = Alphabet(sz[0], sz[1], ans[i]) 
       for y in range(sz[1]):
         for x in range(sz[0]):
-          a.array[y][x] = lns[y][x+i*sz[0]]
+          a.array[y][x][0] = lns[y][x+i*sz[0]]
       w.chars.append(a)
     return w
 
@@ -41,9 +43,9 @@ class Alphabet(object):
     self.w = w
     self.h = h
     self.a = a
-    self.array = np.zeros(shape=(h,w))
+    self.array = np.zeros(shape=(h,w,1))
     if a in alp:
-      self.output = np.zeros(shape=(len(alp),))
+      self.output = np.zeros(shape=(len(alp)))
       self.output[alp.index(a)] = 1.0
 
   def shift(self, dx, dy):
@@ -52,9 +54,9 @@ class Alphabet(object):
     for y in range(self.h):
       for x in range(self.w):
         if y + dy >= 0 and y + dy < self.h and x+dx>=0 and x+dx<self.w:
-          X.array[y][x] = self.array[y+dy][x+dx]
+          X.array[y][x][0] = self.array[y+dy][x+dx][0]
         else:
-          X.array[y][x] = 255
+          X.array[y][x][0] = 255
     return X
 
   def dirty(self, dirty_count):
@@ -63,27 +65,33 @@ class Alphabet(object):
     for i in range(dirty_count):
       y = random.randint(0, self.h - 1)
       x = random.randint(0, self.w - 1)
-      X.array[y][x] = 0
+      X.array[y][x][0] = 0
     return X
 
   def as_input_array(self):
+    '''
     linear = np.zeros(shape=(1,self.w*self.h))
     for y in range(self.h):
       for x in range(self.w):
         linear[0][y*self.w + x] = self.array[y][x]
     return linear
+    '''
+    return self.array
 
   def as_output_array(self):
+    '''
     linear = np.zeros(shape=(1,len(self.output)))
     for i in range(len(self.output)):
       linear[0][i] = self.output[i]
     return linear
+    '''
+    return self.output
 
   def image(self):
     img = Image.new('L', (self.w,self.h)) #w=100,h=70. usually.
     for y in range(self.h):
       for x in range(self.w):
-        img.putpixel((x,y), (int(self.array[y][x] * 255),))
+        img.putpixel((x,y), (int(self.array[y][x][0] * 255),))
     return img
 
   def show(self):
@@ -92,18 +100,18 @@ class Alphabet(object):
   @staticmethod
   def open(path, alpha):
     with open(path) as fr:
-      lns = [[float(v)/255.0 for v in row.split()] for row in fr.readlines()]
+      lns = [[[float(v)/255.0] for v in row.split()] for row in fr.readlines()]
     a = Alphabet(len(lns[0]), len(lns), alpha)
     a.array = np.array(lns)
     return a
+
+  def shake(self):
+    return self #.dirty(random.randint(800,1000))#.shift(random.randint(-2,2),random.randint(-3,3))#.dirty(random.randint(800,1000))
 
 def load_alphabets():
   global alp
   dirs = os.path.join( '..','ipsc2016','l','alphabet')
   imgs = [Alphabet.open(os.path.join(dirs,a + '.in'), a) for a in alp]
-  #x = imgs[1].dirty(random.randint(500,800))
-  #x.show()
-  #pdb.set_trace()
   return imgs
 
 def chars2d_to_image(data):
@@ -117,84 +125,106 @@ def chars2d_to_image(data):
       img.paste(data[y][x].image(),(x*sz[0],y*sz[1]))
   return img
 
+def load_testword():
+  with open(os.path.join( '..','ipsc2016','l','l1','sample.out'),'r') as fr:
+    _ans = fr.readlines()
+  return [Word.open(os.path.join( '..','ipsc2016','l','l1','%03d.in' % (idx+1)), _ans[idx]) for idx in range(190,200)]
+
+def fetch_data(org, tw):
+  dirties = []
+  with open(os.path.join( '..','ipsc2016','l','l1','sample.out'),'r') as fr:
+    _ans = fr.readlines()
+  for idx in range(190):
+    W = Word.open(os.path.join( '..','ipsc2016','l','l1','%03d.in' % (idx+1)), _ans[idx])
+    for c in W.chars:
+      dirties.append(c)
+  random.shuffle(dirties)
+  return dirties
 
 if __name__=='__main__':
   org = load_alphabets()
+  tw = load_testword()
 
-  K = len(alp)
+  K = len(org)
 
-  X = tf.placeholder('float', [None, 7000])
+  X = tf.placeholder('float', [None, 70, 100, 1])
   Y = tf.placeholder('float', [None, K])
 
-  W1 = tf.Variable(tf.random_normal([7000, 256]))
-  W2 = tf.Variable(tf.random_normal([256, 256]))
-  W3 = tf.Variable(tf.random_normal([256, K]))
+  def init_weights(shape):  
+    return tf.Variable(tf.random_normal(shape, stddev=0.01))
 
-  B1 = tf.Variable(tf.random_normal([256]))
-  B2 = tf.Variable(tf.random_normal([256]))
-  B3 = tf.Variable(tf.random_normal([K]))
+  W = init_weights([3,3,1,32]) 
+  W2 =init_weights([3,3,32,64])
+  W3 =init_weights([3,3,64,128])
 
-  L1 = tf.nn.relu(tf.add(tf.matmul(X,W1), B1))
-  L2 = tf.nn.relu(tf.add(tf.matmul(L1, W2), B2))
-  H = tf.add(tf.matmul(L2, W3), B3)
+  keep_prob = tf.placeholder('float')
+
+  L1A = tf.nn.relu(tf.nn.conv2d(X, W, strides=[1,1,1,1], padding='SAME'))
+  L1B = tf.nn.max_pool(L1A, ksize=[1,2,2,1], strides=[1,2,2,1], padding='SAME')
+  L1 = tf.nn.dropout(L1B, keep_prob)
+
+  L2A = tf.nn.relu(tf.nn.conv2d(L1, W2, strides=[1,1,1,1], padding='SAME'))
+  L2B = tf.nn.max_pool(L2A, ksize=[1,2,2,1], strides=[1,2,2,1], padding='SAME')
+  L2 = tf.nn.dropout(L2B, keep_prob)
+
+  W4 = init_weights([128*13*9, 625])
+  WO = init_weights([625, K])
+
+  L3A = tf.nn.relu(tf.nn.conv2d(L2, W3, strides=[1,1,1,1], padding='SAME'))
+  L3B = tf.nn.max_pool(L3A, ksize=[1,2,2,1], strides=[1,2,2,1], padding='SAME')
+  L3C = tf.reshape(L3B, [-1, W4.get_shape().as_list()[0]])
+  L3 = tf.nn.dropout(L3C, keep_prob)
+
+  #print(L3.get_shape().as_list()) = [None,13,9,128]
+
+  keep_prob_hidden = tf.placeholder('float')
+
+  L4A = tf.nn.relu(tf.matmul(L3,W4))
+  L4 = tf.nn.dropout(L4A, keep_prob_hidden)
+
+  H = tf.matmul(L4, WO)
+  P = tf.argmax(H, 1)
 
   C = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=H, labels=Y))
-  opt = tf.train.AdamOptimizer(learning_rate=0.001).minimize(C)
+  opt = tf.train.RMSPropOptimizer(0.001, 0.9).minimize(C)
 
   init = tf.global_variables_initializer()
 
-  '''
-  for i in range(4):
-    W = Word.open(os.path.join( '..','ipsc2016','l','l1','%03d.in' % (i+1)))
-    pic = [W.chars,[org[alp.index(x)].shift(random.randint(-22,22),random.randint(-6,6)).dirty(random.randint(800,1000)) for x in ans[i] ]]
-    chars2d_to_image(pic).show()
-  '''
-  dirties = []
-  for i in org:
-    for j in range(4):
-      x = i.shift(random.randint(-20,20),random.randint(-6,6)).dirty(random.randint(800,1000))
-      dirties.append(x)
-  random.shuffle(dirties)
+  dirties = fetch_data(org,tw)
+  XS = np.array([c.as_input_array() for c in dirties])
+  YS = np.array([c.as_output_array() for c in dirties])
 
-  before_train = datetime.now()
   batch_size = 100
   with tf.Session() as sess:
     sess.run(init)
-    for epoch in range(200):
+    for epoch in range(1000):
       cost = 0.
       for i in range(0,len(dirties),batch_size):
-        _in = dirties[i].as_input_array()
-        _out = dirties[i].as_output_array()
-        for j in range(i+1,min(len(dirties),i+batch_size)):
-          _in = np.concatenate((_in, dirties[j].as_input_array()))
-          _out = np.concatenate((_out, dirties[j].as_output_array()))
-        sess.run(opt, feed_dict={X: _in, Y: _out })
-        cost += sess.run(C, feed_dict={X: _in, Y:_out })
-      if epoch % 20 == 0:
+        j = min(len(dirties),i+batch_size)
+        sess.run(opt, feed_dict={X: XS[i:j], Y: YS[i:j], keep_prob:0.8, keep_prob_hidden:0.5 })
+
+      if epoch % 50 == 0:
         test = 0.
         cnt = 0
-        for i in range(4):
-          W = Word.open(os.path.join( '..','ipsc2016','l','l1','%03d.in' % (i+1)), ans[i])
+        pred = []
+        for W in tw:
+          tch = ""
           for c in W.chars:
-            test += sess.run(C, feed_dict={X:c.as_input_array(),Y:c.as_output_array()})
+            _c, _p = sess.run([C,P], feed_dict={X:[c.shake().as_input_array()],Y:[c.shake().as_output_array()], keep_prob:1.0, keep_prob_hidden:1.0})
             cnt += 1
-        print ("epoch=%d , cost=%f test=%f" % (epoch, cost/len(dirties), test/cnt))
+            tch += "%s" % (alp[_p[0]], )
+            test += _c
+          pred.append(tch + "/" + W.ans)
+        print ("epoch=%d , cost=%f test=%f [%s]" % (epoch, cost, test, "/".join(pred)))
 
-    after_train = datetime.now()
-    train_time = after_train - before_train
-    print("train_time : ", train_time.total_seconds())
+    with open(os.path.join( '..','ipsc2016','l','l1','sample.out'),'r') as fr:
+      _out = [x.strip() for x in fr.readlines()]
+    for i in range(200,800):
+      W = Word.open(os.path.join( '..','ipsc2016','l','l1','%03d.in' % (i+1)))
+      _out[i] = ''
+      for j in range(6):
+        _p = sess.run(P, feed_dict={X:[W.chars[j].as_input_array()], keep_prob:1.0, keep_prob_hidden:1.0})
+        _out[i] += alp[_p[0]]
+    with open(os.path.join('l1.out'),'w') as fw:
+      fw.write('\n'.join(_out))
 
-'''
-        for l in range(1,5):
-          i = random.randint(1,800)
-          W = Word.open(os.path.join( '..','ipsc2016','l','l1','%03d.in' % i))
-          pic = [W.chars,[]]
-          #for i in range(6):
-          #  pic[0].append(dirties[random.randint(0,len(dirties)-1)])
-          for i in pic[0]:
-            x = sess.run(H, feed_dict={X: i.as_input_array()})
-            prob = list(sess.run(tf.nn.softmax(x[0])))
-            index = prob.index(max(prob))
-            pic[1].append(org[index])
-          chars2d_to_image(pic).show()
-'''
